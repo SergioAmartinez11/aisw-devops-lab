@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+data/
+artifacts/*.pth      # pesos entrenados → no van al repo
+!artifacts/.gitkeep

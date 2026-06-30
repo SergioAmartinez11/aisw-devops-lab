@@ -29,6 +29,8 @@ def export():
             "output": {0: "batch_size"},
         },
     )
+    model_proto = onnx.load(ONNX_PATH)
+    onnx.save(model_proto, ONNX_PATH, save_as_external_data=False)
     print(f"✓ ONNX model exported → {ONNX_PATH}")
 
 
