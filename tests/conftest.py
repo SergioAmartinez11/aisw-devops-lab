@@ -31,7 +31,7 @@ def mnist_image_bytes():
     from torchvision import datasets
     import io
 
-    ds = datasets.MNIST("data", train=False, download=False)
+    ds = datasets.MNIST("data", train=False, download=True)
     img, _ = ds[0]
     buf = io.BytesIO()
     img.save(buf, format="PNG")
