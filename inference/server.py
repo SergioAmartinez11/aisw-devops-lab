@@ -7,14 +7,11 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 
-# ── App setup ──────────────────────────────────────────────────────────────────
-app = FastAPI(
-    title="AISW Inference Server",
-    description="ONNX Runtime inference endpoint for MiniCNN digit classifier",
-    version="0.1.0",
-)
+
+
 ONNX_PATH = str(Path(__file__).parent.parent / "artifacts" / "model.onnx")
 CLASS_NAMES = [str(i) for i in range(10)]
 
@@ -22,15 +19,23 @@ CLASS_NAMES = [str(i) for i in range(10)]
 session: ort.InferenceSession | None = None
 
 
-@app.on_event("startup")
-def load_model():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global session
     session = ort.InferenceSession(
         ONNX_PATH,
-        providers=["CPUExecutionProvider"],  # swappable to QNNExecutionProvider on Snapdragon
+        providers=["CPUExecutionProvider"],
     )
     print(f"✓ ONNX model loaded | providers: {session.get_providers()}")
+    yield  # server running
+    session = None  # cleanup on shutdown
 
+# ── App setup ──────────────────────────────────────────────────────────────────
+app = FastAPI(
+    title="AISW Inference Server",
+    description="ONNX Runtime inference endpoint for MiniCNN digit classifier",
+    version="0.1.0",
+    lifespan=lifespan,)
 
 # ── Preprocessing ──────────────────────────────────────────────────────────────
 def preprocess(image_bytes: bytes) -> np.ndarray:
@@ -38,11 +43,11 @@ def preprocess(image_bytes: bytes) -> np.ndarray:
     img = img.resize((28, 28))
     arr = np.array(img, dtype=np.float32) / 255.0
 
-    # Detecta si el fondo es claro (Paint) e invierte para que coincida con MNIST
+    # Detect if background is light (Paint) and invert to match MNIST distribution
     if arr.mean() > 0.5:
         arr = 1.0 - arr
 
-    arr = (arr - 0.1307) / 0.3081                          # normalización MNIST
+    arr = (arr - 0.1307) / 0.3081                          # MNIST normalization
     return arr.reshape(1, 1, 28, 28)
 
 

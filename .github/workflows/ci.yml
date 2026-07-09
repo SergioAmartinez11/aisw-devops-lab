@@ -1,0 +1,221 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+  IMAGE_NAME: aisw-inference
+
+jobs:
+# ──────────────────────────────────────────────────────────────────────────────
+# JOB 1: Test
+# Instala deps, entrena modelo, exporta ONNX, corre todos los tests
+# ──────────────────────────────────────────────────────────────────────────────
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # Cache de pip — si requirements.txt no cambia, usa cache
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Cache del modelo — si model/ no cambia, salta train+export
+      - name: Cache model artifacts
+        id: cache-model
+        uses: actions/cache@v4
+        with:
+          path: artifacts/
+          key: model-${{ runner.os }}-${{ hashFiles('model/**') }}
+
+      - name: Train model
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        run: |
+          cd model
+          python train.py
+
+      - name: Export to ONNX
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        run: |
+          cd model
+          python export.py
+
+      - name: Run unit tests
+        run: pytest tests/test_preprocessing.py -v
+
+      - name: Run integration tests
+        run: pytest tests/test_api.py -v
+
+      - name: Run benchmark tests
+        run: pytest tests/test_benchmark.py -v -s
+
+      # Publica el reporte de tests como artefacto descargable
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: .pytest_cache/
+
+      # Publica el modelo ONNX como artefacto del pipeline
+      - name: Upload ONNX model
+        uses: actions/upload-artifact@v4
+        with:
+          name: onnx-model
+          path: artifacts/model.onnx
+
+# ──────────────────────────────────────────────────────────────────────────────
+# JOB 2: Docker Build
+# Solo corre si los tests pasaron
+# ──────────────────────────────────────────────────────────────────────────────
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: test   # ← bloquea si test falla
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Descarga el modelo generado en el job anterior
+      - name: Download ONNX model
+        uses: actions/download-artifact@v4
+        with:
+          name: onnx-model
+          path: artifacts/
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false        # no hace push a registry, solo build local
+          tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          load: true         # carga la imagen para el smoke test
+
+      - name: Save image size
+        run: |
+          SIZE=$(docker image inspect ${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            --format='{{.Size}}' | awk '{printf "%.1f MB", $1/1024/1024}')
+          echo "Image size: $SIZE"
+          echo "IMAGE_SIZE=$SIZE" >> $GITHUB_ENV
+
+# ──────────────────────────────────────────────────────────────────────────────
+# JOB 3: Smoke Test
+# Levanta el contenedor y verifica que responde correctamente
+# ──────────────────────────────────────────────────────────────────────────────
+  smoke-test:
+    name: Smoke Test (Container)
+    runs-on: ubuntu-latest
+    needs: docker   # ← bloquea si docker build falla
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download ONNX model
+        uses: actions/download-artifact@v4
+        with:
+          name: onnx-model
+          path: artifacts/
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image for smoke test
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: ${{ env.IMAGE_NAME }}:smoke
+          cache-from: type=gha
+          load: true
+
+      - name: Start container
+        run: |
+          docker run -d \
+            --name aisw-server \
+            -p 8000:8000 \
+            ${{ env.IMAGE_NAME }}:smoke
+
+      - name: Wait for server to be ready
+        run: |
+          echo "Waiting for server..."
+          for i in {1..15}; do
+            if curl -sf http://localhost:8000/health; then
+              echo "✓ Server is ready"
+              exit 0
+            fi
+            echo "Attempt $i/15 - waiting..."
+            sleep 2
+          done
+          echo "✗ Server failed to start"
+          docker logs aisw-server
+          exit 1
+
+      - name: Smoke test - health endpoint
+        run: |
+          RESPONSE=$(curl -sf http://localhost:8000/health)
+          echo "Health response: $RESPONSE"
+          echo $RESPONSE | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          assert data['status'] == 'ok', f'Expected ok, got {data[\"status\"]}'
+          assert data['model_loaded'] == True, 'Model not loaded'
+          print('✓ Health check passed')
+          "
+
+      - name: Smoke test - predict endpoint
+        run: |
+          python3 -c "
+          from PIL import Image
+          import io
+          img = Image.new('L', (28, 28), color=0)
+          buf = io.BytesIO()
+          img.save(buf, format='PNG')
+          with open('/tmp/test_digit.png', 'wb') as f:
+              f.write(buf.getvalue())
+          "
+          RESPONSE=$(curl -sf -X POST http://localhost:8000/predict \
+            -F "file=@/tmp/test_digit.png;type=image/png")
+          echo "Predict response: $RESPONSE"
+          echo $RESPONSE | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          assert 'predicted_class' in data
+          assert 'confidence' in data
+          assert 'latency_ms' in data
+          print(f'✓ Predict passed | class={data[\"predicted_class\"]} confidence={data[\"confidence\"]}')
+          "
+
+      - name: Print container logs
+        if: always()
+        run: docker logs aisw-server
+
+      - name: Stop container
+        if: always()
+        run: docker stop aisw-server && docker rm aisw-server
