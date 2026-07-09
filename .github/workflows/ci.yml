@@ -189,24 +189,19 @@ jobs:
           print('✓ Health check passed')
           "
 
+      - name: Install smoke test dependencies
+        run: pip install Pillow
+        
       - name: Smoke test - predict endpoint
         run: |
           python3 -c "
-          import struct, zlib
-
-          def make_png(width=28, height=28):
-              raw = b''.join(b'\x00' + bytes([0]*width) for _ in range(height))
-              def chunk(name, data):
-                  c = struct.pack('>I', len(data)) + name + data
-                  return c + struct.pack('>I', zlib.crc32(name + data) & 0xffffffff)
-              png  = b'\x89PNG\r\n\x1a\n'
-              png += chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 0, 0, 0, 0))
-              png += chunk(b'IDAT', zlib.compress(raw))
-              png += chunk(b'IEND', b'')
-              return png
-
+          from PIL import Image
+          import io
+          img = Image.new('L', (28, 28), color=0)
+          buf = io.BytesIO()
+          img.save(buf, format='PNG')
           with open('/tmp/test_digit.png', 'wb') as f:
-              f.write(make_png())
+              f.write(buf.getvalue())
           "
           RESPONSE=$(curl -sf -X POST http://localhost:8000/predict \
             -F "file=@/tmp/test_digit.png;type=image/png")
