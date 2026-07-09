@@ -1,7 +1,8 @@
-.PHONY: install train export serve clean help
+.PHONY: install train export serve clean help docs-serve docs-build release
 
 PYTHON   := $(CURDIR)/.venv/Scripts/python
 PIP      := $(CURDIR)/.venv/Scripts/pip
+MKDOCS   := $(CURDIR)/.venv/Scripts/mkdocs
 
 
 
@@ -43,12 +44,25 @@ serve:
 clean:
 	rm -rf artifacts/model.pth artifacts/model.onnx
 
+docs-serve:
+	$(MKDOCS) serve
+
+docs-build:
+	$(MKDOCS) build
+
+release:
+	git tag $(VERSION)
+	git push origin $(VERSION)
+
 help:
 	@echo ""
-	@echo "  install    → create venv + install deps"
-	@echo "  train      → train MiniCNN on MNIST"
-	@echo "  export     → export trained model to ONNX"
-	@echo "  pipeline   → train + export in sequence"
-	@echo "  serve      → start FastAPI inference server"
-	@echo "  clean      → remove artifacts and cache"
+	@echo "  install     → create venv + install deps"
+	@echo "  train       → train MiniCNN on MNIST"
+	@echo "  export      → export trained model to ONNX"
+	@echo "  pipeline    → train + export in sequence"
+	@echo "  serve       → start FastAPI inference server"
+	@echo "  docs-serve  → preview MkDocs site locally"
+	@echo "  docs-build  → build static MkDocs site"
+	@echo "  release     → tag + push a release (make release VERSION=v1.0.0)"
+	@echo "  clean       → remove artifacts and cache"
 	@echo ""

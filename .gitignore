@@ -4,3 +4,4 @@ __pycache__/
 data/
 artifacts/*.pth      # pesos entrenados → no van al repo
 !artifacts/.gitkeep
+site/                # mkdocs build output

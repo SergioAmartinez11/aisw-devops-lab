@@ -1,0 +1,157 @@
+name: Release Pipeline
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+# ──────────────────────────────────────────────────────────────────────────────
+# JOB 1: Test
+# Mismo contrato que el job test de ci.yml — no se libera nada que no pase tests
+# ──────────────────────────────────────────────────────────────────────────────
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Cache model artifacts
+        id: cache-model
+        uses: actions/cache@v4
+        with:
+          path: artifacts/
+          key: model-${{ runner.os }}-${{ hashFiles('model/**') }}
+
+      - name: Train model
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        run: |
+          cd model
+          python train.py
+
+      - name: Export to ONNX
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        run: |
+          cd model
+          python export.py
+
+      - name: Run unit tests
+        run: pytest tests/test_preprocessing.py -v
+
+      - name: Run integration tests
+        run: pytest tests/test_api.py -v
+
+      - name: Run benchmark tests
+        run: pytest tests/test_benchmark.py -v -s
+
+      - name: Upload ONNX model
+        uses: actions/upload-artifact@v4
+        with:
+          name: onnx-model
+          path: artifacts/model.onnx
+
+# ──────────────────────────────────────────────────────────────────────────────
+# JOB 2: Release
+# Crea el GitHub Release para el tag y adjunta el modelo ONNX
+# ──────────────────────────────────────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download ONNX model
+        uses: actions/download-artifact@v4
+        with:
+          name: onnx-model
+          path: artifacts/
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          files: artifacts/model.onnx
+          body: |
+            ## AISW DevOps Lab ${{ steps.version.outputs.version }}
+
+            ### What's included
+            - Trained `MiniCNN` digit classifier exported to ONNX (opset 17, dynamic batch axis)
+            - `model.onnx` attached below as a release asset
+            - Full CI-validated build: unit, integration, and benchmark tests all passed before this release was cut
+
+            ### Performance
+            | Metric | Value |
+            |---|---|
+            | P50 latency | ~0.5 ms |
+            | P95 latency | ~0.9 ms |
+            | Throughput | ~1600 req/s |
+
+            ### Run it
+            ```bash
+            docker build -t aisw-inference:${{ steps.version.outputs.version }} .
+            docker run --rm -p 8000:8000 aisw-inference:${{ steps.version.outputs.version }}
+            ```
+
+            Then `curl http://localhost:8000/health` or POST an image to `/predict`.
+
+            See the full docs at the [documentation site](../../).
+
+# ──────────────────────────────────────────────────────────────────────────────
+# JOB 3: Docs
+# Publica MkDocs a GitHub Pages tras un release exitoso
+# ──────────────────────────────────────────────────────────────────────────────
+  docs:
+    name: Deploy Docs
+    runs-on: ubuntu-latest
+    needs: release
+    permissions:
+      contents: write
+      pages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install MkDocs dependencies
+        run: pip install mkdocs mkdocs-material "mkdocstrings[python]"
+
+      - name: Deploy docs to GitHub Pages
+        run: mkdocs gh-deploy --force

@@ -1,0 +1,31 @@
+site_name: AISW DevOps Lab
+site_description: End-to-end ML DevOps lab — PyTorch training, ONNX export, FastAPI + ONNX Runtime inference, Docker, and CI/CD.
+repo_url: https://github.com/SergioAmartinez11/aisw-devops-lab
+repo_name: aisw-devops-lab
+
+theme:
+  name: material
+  palette:
+    scheme: slate
+    primary: deep purple
+    accent: cyan
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - content.code.copy
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - API Reference: api.md
+  - CI/CD Pipeline: ci.md
